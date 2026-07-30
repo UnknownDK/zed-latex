@@ -8,9 +8,6 @@
 
 use super::types::TexlabForwardSearchSettings;
 use crate::zed_command::CommandName;
-use chrono::TimeZone;
-use chrono::Utc;
-use std::time::SystemTime;
 use zed_extension_api as zed;
 
 /// Represents different types of PDF preview applications that this Zed extension supports for previewing built LaTeX documents.
@@ -136,8 +133,9 @@ impl Preview {
     /// Detects a PDF previewer available on the system.
     ///
     /// This function checks for the availability of various PDF previewers by looking for
-    /// their executables in the system PATH. It also handles special cases like downloading
-    /// support scripts for Evince.
+    /// their executables in the system PATH. For Evince, it also downloads the pinned
+    /// `evince_synctex.py` helper (run via the system `python3`) used for synctex
+    /// forward/inverse search.
     ///
     /// # Arguments
     ///
@@ -175,58 +173,33 @@ impl Preview {
         }
 
         if worktree.which("evince").is_some() {
-            const SCRIPT_NAME: &str = "evince_synctex.py";
-            const GITHUB_REPO_NAME: &str = "lnay/evince-synctex";
-            const COMMIT_HASH: &str = "635f7863408a44f3aaa0dbad512f2ba6ac1ad6ff";
-            // Following values refer to the estimated latest time when a
-            // release of this extension updates the version of
-            // evince_synctex.py is to be downloaded. (i.e. possibly the near
-            // future to account for Zed extension release pipeline).
-            const LAST_UPDATE_YEAR: i32 = 2025;
-            const LAST_UPDATE_MONTH: u32 = 3;
-            const LAST_UPDATE_DAY: u32 = 20;
+            // Download the `evince_synctex.py` helper (used for synctex
+            // forward/inverse search) and run it with the system `python3`,
+            // which provides the required `gi` and `dbus` modules. It is
+            // pinned to a specific commit of the fork below; the commit hash is
+            // part of the cached filename, so bumping COMMIT_HASH transparently
+            // triggers a fresh download.
+            const GITHUB_REPO_NAME: &str = "UnknownDK/evince-synctex";
+            const COMMIT_HASH: &str = "511fd2ef6862b43d1565ba2efa4b8da243bff17b";
+            let script_name = format!("evince_synctex_{}.py", &COMMIT_HASH[..12]);
 
-            // The following would all be useless if the string path for
-            // evince_synctex.py in CWD cannot be obtained:
+            // The following would all be useless if the string path for the
+            // script in CWD cannot be obtained:
             if let Some(evince_synctex_path) = (|| {
                 Some(format!(
-                    "{}/{SCRIPT_NAME}",
+                    "{}/{script_name}",
                     std::env::current_dir().ok()?.as_os_str().to_str()?
                 ))
             })() {
-                // Check if `evince_synctex.py` has already downloaded to
-                // latex extension work directory since the last time this
-                // extension updated the version of `evince_synctex.py`.
-                if let Ok(stat) = std::fs::metadata(SCRIPT_NAME) {
-                    if stat.is_file() {
-                        if let Ok(last_download) = stat.modified() {
-                            // SystemTime estimate for last extension update.
-                            // When evince_synctex.py was updated:
-                            let last_update: SystemTime = Utc
-                                .with_ymd_and_hms(
-                                    LAST_UPDATE_YEAR,
-                                    LAST_UPDATE_MONTH,
-                                    LAST_UPDATE_DAY,
-                                    0,
-                                    0,
-                                    0,
-                                )
-                                .single()
-                                .unwrap_or_default()
-                                .into();
-                            if last_download > last_update {
-                                return Some(Preview::Evince {
-                                    evince_synctex_path,
-                                });
-                            }
-                        }
-                    }
+                // Reuse a previously downloaded copy for this commit if present.
+                if std::fs::metadata(&script_name).map_or(false, |stat| stat.is_file()) {
+                    return Some(Preview::Evince { evince_synctex_path });
                 }
-                // Choose evince for preview, provided that evince_synctex.py
+                // Otherwise choose evince for preview, provided the helper
                 // downloads successfully.
                 if zed::download_file(
-                    format!("https://raw.githubusercontent.com/{GITHUB_REPO_NAME}/{COMMIT_HASH}/{SCRIPT_NAME}").as_str(),
-                    SCRIPT_NAME,
+                    format!("https://raw.githubusercontent.com/{GITHUB_REPO_NAME}/{COMMIT_HASH}/evince_synctex.py").as_str(),
+                    &script_name,
                     zed::DownloadedFileType::Uncompressed
                 ).is_ok() {
                     return Some(Preview::Evince { evince_synctex_path });
